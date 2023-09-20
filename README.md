@@ -1,6 +1,11 @@
+
+![image](./assets/football-field.jpg)
+
 # NFL-game-win-prediction-logit-R
 
- Predictive model for NFL game outcomes
+ Predictive model for NFL game outcomes - void of data leakage
+
+ 
 
 Requirements:
 
