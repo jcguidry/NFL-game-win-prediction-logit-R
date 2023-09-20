@@ -1,0 +1,1017 @@
+---
+title: "Applied Predictive Analytics NFL Game Outcome Prediction"
+author: "Team Lombardi"
+date: "12/1/2021"
+output: pdf_document
+header-includes:
+   - \usepackage{setspace}
+   - \singlespacing
+geometry: "left=3cm,right=3cm,top=2cm,bottom=2cm"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,fig.width=12, fig.height=4)
+```
+
+
+```{r include=FALSE}
+library(tidyr)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(nflfastR)
+library(caret)
+library(caTools)
+library(pROC)
+library(knitr)
+library(ggpubr)
+
+```
+
+```{r include=FALSE}
+
+#### Creating the data from both game and play level
+
+# table 1: load game schedules data and select appropriate columns (home_games_table)
+# all of our calculated column will be added to this
+# This is our main dataset for prediction
+games <- nflreadr::load_schedules(2009:2020) 
+
+# names(nflreadr::load_schedules(2010:2020))
+
+games <- games %>% select(season,week, old_game_id, gameday, home_team, away_team, home_score, away_score, result, 
+                          weekday, game_type, 
+                          
+                          spread_line, home_spread_odds, away_spread_odds, 
+                          
+                          home_moneyline, away_moneyline, under_odds, over_odds,
+                          
+                          home_rest, away_rest, 
+                          
+                          surface, temp, wind, home_qb_name, away_qb_name, stadium, referee,
+                          home_coach, away_coach) %>%
+        mutate(
+        spread = home_score-away_score, #create spread
+        homeWin = if_else(spread>0, 1,0) # create homewin (what we want to predict)
+        )
+games <- games %>% arrange(season, home_team, gameday)
+
+
+#In one dataset old teams name were changed.
+#We must make sure both datasets match.
+games[games$home_team=='STL','home_team'] = 'LA'
+games[games$home_team=='SD','home_team'] = 'LAC'
+games[games$home_team=='OAK','home_team'] = 'LV'
+
+games[games$away_team=='STL','away_team'] = 'LA'
+games[games$away_team=='SD','away_team'] = 'LAC'
+games[games$away_team=='OAK','away_team'] = 'LV'
+
+
+# This is the main dataframe we'll be working with. Rename it to df
+df <- games
+
+
+# play by play data
+pbp <- load_pbp(2009:2020)
+
+# names(pbp)
+
+# create a table where each game ID is listed twice. 
+# This is the only way to be able to show all the games for a single team in one column
+# we need to be able to see all the game schedules from both teams' "perspective"
+
+#table 2, summing up stats when filtered for 'home' team
+game_summary_home <- pbp %>%
+  group_by(old_game_id) %>%
+  filter(posteam_type =='home') %>%
+  summarize(
+    team = first(home_team),
+    win = max(if_else(result >0, 1,0)),
+    won_by = max(result)*1,
+    points = max(home_score),
+    home_game = 1,
+    complete_pass = sum(complete_pass ,na.rm=TRUE ),
+    rush_attempt = sum(rush_attempt ,na.rm=TRUE ),
+    rushing_yards = sum(rushing_yards ,na.rm=TRUE ),
+    receiving_yards = sum(receiving_yards ,na.rm=TRUE ),
+    pass_attempt = sum(pass_attempt ,na.rm=TRUE ),
+    passing_yards = sum(passing_yards ,na.rm=TRUE ),
+    third_down_converted = sum(third_down_converted ,na.rm=TRUE ),
+    third_down_failed = sum(third_down_failed ,na.rm=TRUE ),
+    return_yards = sum(return_yards ,na.rm=TRUE ),
+    qb_hit = sum(qb_hit ,na.rm=TRUE ),
+    fumble = sum(fumble ,na.rm=TRUE ),
+    fumble_lost = sum(fumble_lost ,na.rm=TRUE ),
+    sack = sum(sack ,na.rm=TRUE ),
+    touchdown = sum(touchdown ,na.rm=TRUE ),
+    field_goal_attempt = sum(field_goal_attempt ,na.rm=TRUE ),
+    penalty_yards = sum(penalty_yards ,na.rm=TRUE ),
+    interception = sum(interception ,na.rm=TRUE ),
+    epa_game_total = sum(epa ,na.rm=TRUE),
+    epa_play_avg = mean(epa ,na.rm=TRUE),
+  )
+
+#table 3, summing up stats when filtered for 'away' team
+game_summary_away <- pbp %>%
+  group_by(old_game_id) %>%
+  filter(posteam_type =='away') %>%
+  summarize(
+    team = first(away_team),
+    win = max(if_else(result <0, 1,0)),
+    won_by = max(result)*-1 , 
+    points = max(away_score),
+    home_game = 0,
+    complete_pass = sum(complete_pass ,na.rm=TRUE ),
+    rush_attempt = sum(rush_attempt ,na.rm=TRUE ),
+    rushing_yards = sum(rushing_yards ,na.rm=TRUE ),
+    receiving_yards = sum(receiving_yards ,na.rm=TRUE ),
+    pass_attempt = sum(pass_attempt ,na.rm=TRUE ),
+    passing_yards = sum(passing_yards ,na.rm=TRUE ),
+    third_down_converted = sum(third_down_converted ,na.rm=TRUE ),
+    third_down_failed = sum(third_down_failed ,na.rm=TRUE ),
+    return_yards = sum(return_yards ,na.rm=TRUE ),
+    qb_hit = sum(qb_hit ,na.rm=TRUE ),
+    fumble = sum(fumble ,na.rm=TRUE ),
+    fumble_lost = sum(fumble_lost ,na.rm=TRUE ),
+    sack = sum(sack ,na.rm=TRUE ),
+    touchdown = sum(touchdown ,na.rm=TRUE ),
+    field_goal_attempt = sum(field_goal_attempt ,na.rm=TRUE ),
+    penalty_yards = sum(penalty_yards ,na.rm=TRUE ),
+    interception = sum(interception ,na.rm=TRUE ),
+    epa_game_total = sum(epa ,na.rm=TRUE),
+    epa_play_avg = mean(epa ,na.rm=TRUE),
+  )
+
+#str(game_summary_home)
+#str(game_summary_away)
+
+# Stack tables 2 and 3 on top of each other
+# call this new table "team_schedules"
+team_schedules = bind_rows(game_summary_home, game_summary_away)
+
+# now "home" and "away" is consolidated to "team" and each game shows up twice.
+
+
+#add season, week, date to "team_schedules"
+game_dates = games %>% select(season, week, old_game_id, gameday)
+team_schedules = team_schedules %>% left_join(game_dates)
+
+#sort "team_schedules" by season, team, date
+team_schedules = team_schedules %>% arrange(season, team, gameday)
+
+
+
+
+
+
+
+
+###############################
+### Defining functions to evaluate team's season performance before a game.
+
+
+#create function to get cumulative stats of a team games prior to a game
+#this function returns the data containing previous games
+get_team_games <- function(df,team_name,game_season, game_week){
+  
+  df = df %>% filter(season == game_season,
+                     team == team_name,
+                     week < game_week)
+  return(df)
+}
+
+#example
+# str(get_team_games(team_schedules, "MIN", 2010,5))
+
+
+
+
+#this function returns the cumulative statistics of the games prior in the season
+get_team_stats <- function(df,team_name,game_season, game_week){
+  
+  df = df %>% filter(season == game_season,
+                     team == team_name,
+                     week < game_week)
+  
+  df = df %>% summarize(
+    szn_wins = mean(win),
+    szn_spread = mean(won_by),
+    szn_points = mean(points),
+    szn_home_games = mean(home_game),
+    szn_completed_passes = mean(complete_pass),
+    szn_rush_attempts = mean(rush_attempt),
+    szn_rushing_yards = mean(rushing_yards),
+    szn_receiving_yards = mean(receiving_yards),
+    szn_pass_attempt = mean(pass_attempt),
+    szn_passing_yards = mean(passing_yards),
+    szn_third_down_conversions = mean(third_down_converted),
+    szn_third_down_failed = mean(third_down_failed),
+    szn_return_yards = mean(return_yards),
+    szn_qb_hit = mean(qb_hit),
+    szn_fumbles = mean(fumble),
+    szn_fumbles_lost_pos = mean(fumble_lost),
+    szn_sacked_sum = mean(sack),
+    szn_touchdowns = mean(touchdown),
+    szn_FG_attempts = mean(field_goal_attempt),
+    szn_penalty_yards = mean(penalty_yards),
+    szn_interceptions = mean(interception),
+    szn_game_epa = mean(epa_game_total),
+    szn_play_epa = mean(epa_play_avg)
+    )
+  
+  return(df)
+  
+}
+
+#example
+# str(get_team_stats(team_schedules, "MIN", 2010,5))
+
+
+
+
+# This function returns the cumulative statistics ALL GAMES IN A SEASON
+# Should be used if it's the first game of the season
+get_team_szn_stats <- function(df,team_name,game_season, game_week){
+  
+  df = df %>% filter(season == game_season,
+                     team == team_name)
+  
+  df = df %>% summarize(
+    szn_wins = mean(win),
+    szn_spread = mean(won_by),
+    szn_points = mean(points),
+    szn_home_games = mean(home_game),
+    szn_completed_passes = mean(complete_pass),
+    szn_rush_attempts = mean(rush_attempt),
+    szn_rushing_yards = mean(rushing_yards),
+    szn_receiving_yards = mean(receiving_yards),
+    szn_pass_attempt = mean(pass_attempt),
+    szn_passing_yards = mean(passing_yards),
+    szn_third_down_conversions = mean(third_down_converted),
+    szn_third_down_failed = mean(third_down_failed),
+    szn_return_yards = mean(return_yards),
+    szn_qb_hit = mean(qb_hit),
+    szn_fumbles = mean(fumble),
+    szn_fumbles_lost_pos = mean(fumble_lost),
+    szn_sacked_sum = mean(sack),
+    szn_touchdowns = mean(touchdown),
+    szn_FG_attempts = mean(field_goal_attempt),
+    szn_penalty_yards = mean(penalty_yards),
+    szn_interceptions = mean(interception),
+    szn_game_epa = mean(epa_game_total),
+    szn_play_epa = mean(epa_play_avg)
+    
+  )
+  return(df)
+  
+}
+
+#example
+# str(get_team_szn_stats(team_schedules, "MIN", 2010,5))
+
+
+
+###############################
+#### Generate stats for the HOME teams (iterate through games)
+
+
+#use our function once to obtain the column names of the table it creates 
+szn_stats =  get_team_stats(team_schedules, "MIN", 2010,1)
+#create an empty data.frame with this number of columns
+cumulative_stats = data.frame(matrix(ncol = length(names(szn_stats)), nrow = 0))
+#assign column names of the stats we will generate to this empty dataframe
+colnames(cumulative_stats) = colnames(szn_stats)
+
+
+# iterate through our original "games" dataset and generate the cumulative stats for each row.
+# Do this for the home team
+# if it's the first week, look at last season's stats
+
+
+for (i in 1:nrow(df)) {
+#for (i in 1:1 ){
+  hometeam  <- pull( df[i, "home_team"] )
+  game_season <- pull( df[i, "season"] )
+  game_week <- pull( df[i, "week"] )
+
+  if(game_week > 1){
+    szn_stats = get_team_stats(team_schedules, hometeam, game_season, game_week)
+  }
+  else{
+    szn_stats = get_team_szn_stats(team_schedules, hometeam, game_season-1, game_week)
+  }
+
+  cumulative_stats[i,] = szn_stats[1,]
+}
+
+
+# rename all these stats to HOME, as we ran these for all the home teams
+cumulative_stats <- cumulative_stats %>% rename(
+  home__szn_wins = szn_wins,
+  home__szn_spread = szn_spread,
+  home__szn_points = szn_points,
+  home__szn_home_games = szn_home_games,
+  home__szn_completed_passes = szn_completed_passes,
+  home__szn_rush_attempts = szn_rush_attempts,
+  home__szn_rushing_yards = szn_rushing_yards,
+  home__szn_receiving_yards = szn_receiving_yards,
+  home__szn_pass_attempt = szn_pass_attempt,
+  home__szn_passing_yards = szn_passing_yards,
+  home__szn_third_down_conversions = szn_third_down_conversions,
+  home__szn_third_down_failed = szn_third_down_failed,
+  home__szn_return_yards = szn_return_yards,
+  home__szn_qb_hit = szn_qb_hit,
+  home__szn_fumbles = szn_fumbles,
+  home__szn_fumbles_lost_pos = szn_fumbles_lost_pos,
+  home__szn_sacked_sum = szn_sacked_sum,
+  home__szn_touchdowns = szn_touchdowns,
+  home__szn_FG_attempts = szn_FG_attempts,
+  home__szn_penalty_yards = szn_penalty_yards,
+  home__szn_interceptions = szn_interceptions,
+  home__szn_game_epa = szn_game_epa,
+  home__szn_play_epa = szn_play_epa
+)
+
+
+# merge all these HOME stats onto the side of our dataframe.
+cumulative_stats$old_game_id = df$old_game_id
+df = merge(df, cumulative_stats, by='old_game_id')
+
+
+
+###############################
+#### Generate stats for the AWAY teams (iterate through games)
+
+#use our function once to obtain the column names of the table it creates  
+szn_stats =  get_team_stats(team_schedules, "MIN", 2007,1)
+#create an empty data.frame with this number of columns
+cumulative_stats = data.frame(matrix(ncol = length(names(szn_stats)), nrow = 0))
+#assign column names of the stats we will generate to this empty dataframe
+colnames(cumulative_stats) = colnames(szn_stats)
+
+
+# iterate through our original "games" dataset and generate the cumulative stats for each row.
+# Do this for the away team
+# if it's the first week, look at last season's stats
+
+
+for (i in 1:nrow(df)) {
+  #for (i in 1:1 ){
+  hometeam  <- pull( df[i, "away_team"] )
+  game_season <- pull( df[i, "season"] )
+  game_week <- pull( df[i, "week"] )
+
+  if(game_week > 1){
+    szn_stats = get_team_stats(team_schedules, hometeam, game_season, game_week)
+  }
+  else{
+    szn_stats = get_team_szn_stats(team_schedules, hometeam, game_season-1, game_week)
+  }
+
+  cumulative_stats[i,] = szn_stats[1,]
+}
+
+# rename all these stats to HOME, as we ran these for all the home teams
+cumulative_stats <- cumulative_stats %>% rename(
+  away__szn_wins = szn_wins,
+  away__szn_spread = szn_spread,
+  away__szn_points = szn_points,
+  away__szn_home_games = szn_home_games,
+  away__szn_completed_passes = szn_completed_passes,
+  away__szn_rush_attempts = szn_rush_attempts,
+  away__szn_rushing_yards = szn_rushing_yards,
+  away__szn_receiving_yards = szn_receiving_yards,
+  away__szn_pass_attempt = szn_pass_attempt,
+  away__szn_passing_yards = szn_passing_yards,
+  away__szn_third_down_conversions = szn_third_down_conversions,
+  away__szn_third_down_failed = szn_third_down_failed,
+  away__szn_return_yards = szn_return_yards,
+  away__szn_qb_hit = szn_qb_hit,
+  away__szn_fumbles = szn_fumbles,
+  away__szn_fumbles_lost_pos = szn_fumbles_lost_pos,
+  away__szn_sacked_sum = szn_sacked_sum,
+  away__szn_touchdowns = szn_touchdowns,
+  away__szn_FG_attempts = szn_FG_attempts,
+  away__szn_penalty_yards = szn_penalty_yards,
+  away__szn_interceptions = szn_interceptions,
+  away__szn_game_epa = szn_game_epa,
+  away__szn_play_epa = szn_play_epa
+)
+
+# merge all these HOME stats onto the side of our dataframe.
+cumulative_stats$old_game_id = df$old_game_id
+df = merge(df, cumulative_stats, by='old_game_id')
+
+df = df %>% filter(season > 2009)
+
+###############################
+### Calculate columns that compare the home and away team season stats (difference)
+
+df <- df %>% mutate(
+  diff__szn_wins = home__szn_wins - away__szn_wins,
+  diff__szn_spread = home__szn_spread - away__szn_spread,
+  diff__szn_points  = home__szn_points - away__szn_points,
+  diff__szn_home_games = home__szn_home_games - away__szn_home_games,
+  diff__szn_completed_passes = home__szn_completed_passes - away__szn_completed_passes,
+  diff__szn_rush_attempts = home__szn_rush_attempts - away__szn_rush_attempts,
+  diff__szn_rushing_yards = home__szn_rushing_yards - away__szn_rushing_yards,
+  diff__szn_receiving_yards = home__szn_receiving_yards - away__szn_receiving_yards,
+  diff__szn_pass_attempt = home__szn_pass_attempt - away__szn_pass_attempt,
+  diff__szn_passing_yards = home__szn_passing_yards - away__szn_passing_yards,
+  diff__szn_third_down_conversions = home__szn_third_down_conversions - away__szn_third_down_conversions,
+  diff__szn_third_down_failed = home__szn_third_down_failed - away__szn_third_down_failed,
+  diff__szn_return_yards = home__szn_return_yards - away__szn_return_yards,
+  diff__szn_qb_hit  = home__szn_qb_hit - away__szn_qb_hit,
+  diff__szn_fumbles = home__szn_fumbles - away__szn_fumbles,
+  diff__szn_fumbles_lost_pos = home__szn_fumbles_lost_pos - away__szn_fumbles_lost_pos,
+  diff__szn_sacked_sum = home__szn_sacked_sum - away__szn_sacked_sum,
+  diff__szn_touchdowns = home__szn_touchdowns - away__szn_touchdowns,
+  diff__szn_FG_attempts = home__szn_FG_attempts - away__szn_FG_attempts,
+  diff__szn_penalty_yards = home__szn_penalty_yards - away__szn_penalty_yards,
+  diff__szn_interceptions = home__szn_interceptions - away__szn_interceptions,
+  diff__szn_game_epa = home__szn_game_epa - away__szn_game_epa,
+  diff__szn_play_epa = home__szn_play_epa - away__szn_play_epa,
+  diff__szn_touchdowns= home__szn_touchdowns - away__szn_touchdowns
+)
+
+write.csv(df,"pre_model_data.csv", row.names = FALSE)
+
+
+```
+
+```{r include=FALSE}
+
+# if all the libraries are imported, AND you've run the above cell at least once, you can now begin running from here to prevent redundant calculations
+
+#######
+
+df = read.csv("pre_model_data.csv")
+
+
+
+##### final formatting for model
+###############################
+
+
+#### Which factors are categorical?
+
+#col_types = sapply(df, class)
+#col_types[col_types== "character"]
+
+### Convert categorical variables to factors
+df$weekday = factor( df$weekday )
+df$game_type = factor( df$game_type )
+df$surface = factor( df$surface )
+df$home_qb_name  = factor( df$home_qb_name  )
+df$away_qb_name = factor( df$away_qb_name )
+df$stadium = factor( df$stadium )
+df$referee = factor( df$referee )
+df$home_coach = factor( df$home_coach )
+df$away_coach = factor( df$away_coach )
+
+
+
+###############################
+### checking the numeric variables
+
+# 
+# # show numeric variables
+# data.frame( num_unique = sapply(df, n_distinct) , 
+#             data_type = sapply(df, class) ) %>%
+#   filter(data_type == 'integer'|data_type == 'numeric') %>%
+#   arrange(num_unique)
+
+
+# get rid of 2 null rows
+df = df %>% drop_na(home__szn_wins) %>%
+  drop_na(diff__szn_home_games) %>%
+  drop_na(home_moneyline)
+
+#replace missing wind and temp with average
+df[is.na(df$wind),'wind'] = round(mean(df$wind, na.rm = TRUE),0)
+df[is.na(df$temp),'temp'] = round(mean(df$temp, na.rm = TRUE),0)
+
+
+###############################
+### checking the numeric variables again now that they're cleaned up
+
+# # show numeric variables
+# data.frame( num_unique = sapply(df, n_distinct) , 
+#             data_type = sapply(df, class) ) %>%
+#   filter(data_type == 'integer'|data_type == 'numeric') %>%
+#   arrange(num_unique)
+
+
+
+
+# ###########
+# ### Create table of statistics for numeric variables only
+# library(moments)
+# getmode <- function(v) {
+#   uniqv <- unique(v)
+#   uniqv[which.max(tabulate(match(v, uniqv)))]
+# }
+# 
+# numeric_df =  select_if(df, is.numeric)
+# numeric_stats <- data.frame(
+#   unique = sapply(numeric_df, n_distinct),
+#   isNA = sapply(numeric_df, function(x) sum(is.na(x))),
+#   data_type = sapply(numeric_df, class),
+#   min = sapply(numeric_df, min),
+#   max = sapply(numeric_df, max),
+#   mean = round( sapply(numeric_df, mean) ,0),
+#   median = sapply(numeric_df, median),
+#   std = round( sapply(numeric_df, sd) ,0),
+#   skew = sapply(numeric_df, skewness),
+#   kurt = sapply(numeric_df, kurtosis),
+#   mode = sapply(numeric_df, getmode)
+# 
+# ) %>%
+#   arrange(unique)
+# numeric_stats
+
+
+```
+
+```{r include=FALSE}
+
+### checking correlations
+
+# instead of correlation matrix, lets just list out the correlations and order them
+# This ***does not account for significance*** , just correlation coefficient
+
+corr <- cor(select_if(df, is.numeric))
+corr = data.frame( corr[,'homeWin'] ) %>%
+       rename(homeWin_corr = "corr....homeWin..") %>%
+       arrange(-abs(homeWin_corr))
+
+
+#let's filter to look at only the more strongly correlated variables
+correlation_threshold = .08
+corr = corr %>% filter(homeWin_corr > correlation_threshold | homeWin_corr < -correlation_threshold) 
+
+# uncomment to show correlations
+# corr
+
+
+```
+
+
+```{r include=FALSE}
+
+#### defining a function to quickly check accuracy
+
+get_model_accuracy = function(model, test_data){
+  
+  #classification matrix
+  predLR = predict(model,test_data,type="response") #This is the probability that the score is a "good score"
+  
+  pred = predLR
+  pred[pred>=.5] = 1
+  pred[pred!=1] = 0
+  
+  classMatrix = table(pred,test_data$homeWin) #first variable is by row, the second is by column
+  # print("Classification Matrix:")
+  # print(classMatrix)
+  
+  # roc_curve = roc(test_data$homeWin,predLR,plot = TRUE, print.auc = FALSE)
+  # AUC<- auc(roc_curve)
+  
+  # print("Accuracy:")
+  accuracy = sum(diag(classMatrix))/sum(classMatrix)
+  # print(accuracy)
+  return(accuracy)
+}
+
+
+# Convert our target variable to a factor
+# df$homeWin = factor( df$homeWin ) 
+
+
+# Calculate the average homewin probability
+cat(paste('Probability home team wins: ', round(mean(df$homeWin),2)  ))
+
+
+```
+
+
+```{r}
+### Building a model
+
+# logistic regression model and output
+model = glm(homeWin ~ 
+              diff__szn_spread 
+            + diff__szn_third_down_failed 
+            + diff__szn_interceptions 
+            + diff__szn_fumbles 
+            + diff__szn_completed_passes
+            ,data = df ,family='binomial')
+
+
+# Make predictions on our dataset
+pred_probs = predict(model,df,type="response")
+
+# Was the outcome win or lose?
+pred = pred_probs
+pred[pred>=.5] = 1
+pred[pred!=1] = 0
+
+# add predictions to data
+df$prediction_probability = pred_probs
+df$prediction = pred
+
+# create column that designated if the prediction was correct
+df = df %>% mutate(
+        correct_prediction = if_else(homeWin == prediction, 1,0)
+              )
+
+
+write.csv(df,"hw2_data_with_predictions.csv", row.names = FALSE)
+
+
+```
+
+
+```{r}
+
+#### Assessment of model performance
+
+#model output
+model_summary = summary(model)
+
+#model accuracy
+model_accuracy = get_model_accuracy(model, df)
+
+# variable importance
+variable_importance = varImp(model) %>% arrange(-Overall)
+
+AIC = AIC(model)
+
+#classicifation matrix
+classMatrix = table(pred,df$homeWin) 
+
+```
+
+
+#### Prepared by:
+
+-   Collin Guidry (48501146), Ashley Jurak (48501172), Jiten Mistry (48666610),  Priyanka Raj (48682704), Kevin Wolf (47616989)
+
+#### Introduction:
+
+- This report is meant to explain the relationship between the probability that a team will win (at home) and various NFL team cumulative season statistics, such as the difference between the total number of interceptions and fumbles between the home and away teams. By identifying significant indicators of success, a team can improve its strategy and areas of focus to improve outcomes. Ultimately, we hope fans will use this information to make informed betting decisions when wagering on the game.
+
+#### Data Preparation
+- The NFL data used in this analysis is presented at the game-level, representing a matchup between two teams, as well as at the play-level. By aggregating data on the play-level, the total yards or interceptions a team produces can be calculated for each game. Once the play-level statistics are aggregated to the game-level, the cumulative sum throughout the season is calculated for each game. For example, the total interceptions from all previous games in a season can be totaled for both the home and away teams. The difference of these cumulative season statistics is then calculated between the home and away teams to create a variable of comparison for each matchup. For the first week of the season, totals from the previous season are referenced. This approach, of calculating the differences of cumulative statistics between teams, is necessary for capturing information that is only available prior to a matchup and comparing both teams.
+
+##### Assumtions when predicting a home team's win
+- Teams have a 56% chance of winning when playing at home. (n=2,936)
+- On average, home teams win by a 2 point spread.
+- On average, odd-makers predict home teams will win a 2.2 point spead line.
+
+##### Model Variable Selection
+- The **spread line**, a game spread prediction generated by oddsmakers, is the single best predictor when creating the highest accuracy model, yet it does not explain how individual team performance metrics contribute to wins. As the spread line does not allow us any practical interpretations, we chose to base our model on season performance metrics instead. These insights help us better understand which variables might have an explanatory effect on home win probability.
+- Once we gained this understanding and computed correlations, highly correlated variables were selected as candidates to begin building a model with the highest level of predictive accuracy.
+
+##### Endogeneity of Variables 
+When considering the variables to be used in our model, the oddsmakers’ spread line was by far the most significant in predicting win probability. When the spread line is included in the model in addition to season statistics, illogical relationships are introduced due to endogeneity and multicollinearity. Because the spread line is generated with season statistics, such as total season touchdowns, the two metrics are correlated with each other. Total touchdowns scored in a season is significantly and positively correlated with win probability. When used in a model with spread line, a team’s total touchdowns is significantly and negatively correlated with win probability, which defies logic. Spread line was removed to address the issue of endogeneity it created when used with other variables. Variables were only included if they were both statistically significant and contributed a logical relationship to the model.
+
+##### Variables of Importance
+
+The following combination variables were selected for the model, in order of highest importance.
+
+1) Difference in both teams' **cumulative game spread** thus far in the season (CGS)
+2) Difference in both teams' **total third down failures** thus far in the season (TTDF)
+3) Difference in both teams' **total interceptions** thus far in the season (TI)
+4) Difference in both teams' **total completed passes** thus far in the season (TCP)
+5) Difference in both teams' **total fumbles** thus far in the season (TF)
+
+```{r}
+knitr::opts_chunk$set(echo = FALSE,fig.width=10, fig.height=3)
+
+```
+```{r}
+library(ggplot2)
+
+varimp_df = data.frame(
+  Variable = row.names(variable_importance),
+  Importance = variable_importance$Overall
+) 
+
+varimp_df = varimp_df %>% arrange(-Importance)
+
+varimp_df[1,1] = "1) Difference in Cumulative Season Game Spread"
+varimp_df[2,1] = "2) Difference in Total Season Third Down Failures"
+varimp_df[3,1] = "3) Difference in Total Season Interceptions"
+varimp_df[4,1] = "4) Difference in Total Season Completed Passes"
+varimp_df[5,1] = "4) Difference in Total Season Fumbles"
+
+
+ggplot(varimp_df) +
+ aes(weight = Importance, x = reorder(Variable, Importance)) +
+ geom_bar(fill = "#112446") +
+ labs(x = "Variable", 
+ y = "Importance", subtitle = "Importance of Significant Variables") +
+  coord_flip()+
+ theme_minimal()
+
+```
+ 
+ Each variable's contribution towards predicting home win probability is quantified in the figure above.
+ 
+##### Variable Relationships
+- How do these variables correlate with a team's percentage of home wins?
+```{r}
+knitr::opts_chunk$set(echo = FALSE,fig.width=10, fig.height=5)
+```
+```{r}
+library(ggplot2)
+
+a= df %>% select(homeWin, diff__szn_spread, home_team) %>%
+       group_by(home_team) %>%
+        summarize(
+        win_percentage = mean(homeWin),
+        diff__szn_spread = mean(diff__szn_spread)
+        ) %>%
+ggplot( ) +
+  aes(
+    y = win_percentage,
+    x = diff__szn_spread,
+    # group = home_team,
+  ) +
+  invisible(geom_smooth(span = 1,formula = 'y ~ x',method = 'loess'))  +
+  geom_text(aes(label=home_team), size=2) +
+  labs(
+    y = "Average Win Percentage",
+    x = "Average Difference in Cumulative Season Spread",
+    title = " ",
+    subtitle =  "1)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 22L, hjust = 0.5)) +
+  ylim(0, 1)
+  # xlim(-10, 10) 
+
+
+
+b = df %>% select(homeWin, diff__szn_third_down_failed, home_team) %>%
+       group_by(home_team) %>%
+        summarize(
+        win_percentage = mean(homeWin),
+        diff__szn_third_down_failed = mean(diff__szn_third_down_failed)
+        ) %>%
+ggplot( ) +
+  aes(
+    y = win_percentage,
+    x = diff__szn_third_down_failed,
+    # group = home_team,
+  ) +
+  invisible(geom_smooth(span = 1,formula = 'y ~ x',method = 'loess'))  +
+  geom_text(aes(label=home_team), size=2) +
+  labs(
+    y = "Average Win Percentage",
+    x = "Average Difference in Season Third Down Failures",
+    title = " ",
+    subtitle =  "2)"
+
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 22L, hjust = 0.5)) +
+  ylim(0, 1)
+  # xlim(-10, 10) 
+
+
+
+
+# interceptions
+c = df %>% select(homeWin, diff__szn_interceptions, home_team) %>%
+       group_by(home_team) %>%
+        summarize(
+        win_percentage = mean(homeWin),
+        diff__szn_interceptions = mean(diff__szn_interceptions)
+        ) %>%
+ggplot( ) +
+  aes(
+    x = diff__szn_interceptions,
+    y = win_percentage,
+    # group = home_team,
+  ) +
+  invisible(geom_smooth(span = 1,formula = 'y ~ x',method = 'loess'))  +
+  geom_text(aes(label=home_team), size=2) +
+  labs(
+    y = "Average Win Percentage",
+    x = "Average Difference in Season Interceptions",
+    title = " ",
+    subtitle =  "3)"
+
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 22L, hjust = 0.5)) +
+  ylim(0, 1)
+  # xlim(-10, 10)
+  
+
+
+
+# completed passes
+d = df %>% select(homeWin, diff__szn_completed_passes, home_team) %>%
+       group_by(home_team) %>%
+        summarize(
+        win_percentage = mean(homeWin),
+        diff__szn_completed_passes = mean(diff__szn_completed_passes)
+        ) %>%
+ggplot( ) +
+  aes(
+    y = win_percentage,
+    x = diff__szn_completed_passes,
+    # group = home_team,
+  ) +
+  invisible(geom_smooth(span = 1,formula = 'y ~ x',method = 'loess'))  +
+  geom_text(aes(label=home_team), size=2) +
+  labs(
+    y = "Average Win Percentage",
+    x = "Average Difference in Total Season Completed passes",
+    title = " ",
+    subtitle =  "4)"
+
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 22L, hjust = 0.5)) +
+  ylim(0, 1)
+  # xlim(-10, 10)
+
+# ggarrange(plotlist= list(a, b, c), ncol =3, nrow=1, common.legend = TRUE)
+
+
+ggarrange(plotlist= list(a, b, c, d), ncol =2, nrow=2, common.legend = TRUE)
+
+
+
+
+```
+
+##### 
+Each NFL team is plotted in the figures above. Teams towards the top of each plot have higher home win percentages. 
+
+1) The **Difference in Cumulative Spread** graph (Figure 1) shows the totaled points the each has won or lost by throughout the season compared to its opponents. This relationship indicates that teams with a higher CGS than that of their opponents are more likely to win home games.
+
+2) The **Difference in Third Down Failures** graph (Figure 2) shows the total third down failures each team has compared to its opponent. This relationship indicates that teams with fewer TTDFs than the opposing team are more likely to win home games.
+
+3) The **Difference in Interceptions** graph (Figure 3) shows the total interceptions each team has compared to its opponent. This relationship indicates that teams with fewer total interceptions then the opposing team are more likely to win home games.
+
+4) The **Difference in Completed Passes** graph (Figure 4) shows the total completed passes each team has compared to its opponent. This relationship indicates that teams with a greater number of completed passes than the opposing team are more likely to win home games.
+
+## Logistic Regression Model
+
+#### Model Accuracy and Limitations
+ 
+The model can accurately predict game outcomes 63% of the time, which is 12.5% more accurate than assuming the home team will win each game.  NFL game outcomes are not easily predicted by high-level statistics, especially as for teams of similar skill are matched. As shown in the figure below, We do not recommended using this model for super bowl or wildcard games.
+
+```{r}
+knitr::opts_chunk$set(echo = FALSE,fig.width=10, fig.height=3)
+```
+```{r}
+game_type_accuracy_df = df %>%
+  select(game_type, correct_prediction) %>%
+  group_by(game_type) %>%
+  summarize(Accuracy = mean(correct_prediction)) %>%
+  arrange(-Accuracy)
+  # rename( "Game Type" = game_type)
+
+game_type_accuracy_df[1,'Game Type'] = 'Divisional'
+game_type_accuracy_df[2,'Game Type'] = 'Conference'
+game_type_accuracy_df[3,'Game Type'] = 'Regular'
+game_type_accuracy_df[4,'Game Type'] = 'Wild Card'
+game_type_accuracy_df[5,'Game Type'] = 'Super Bowl'
+
+ggplot(game_type_accuracy_df) +
+  aes(x = reorder(`Game Type`, Accuracy), weight = Accuracy) +
+  geom_bar(fill = "#112446") +
+  coord_flip() +
+  labs(x = 'Game Type', y = "Predictive Accuracy") +
+  theme_minimal()
+```
+
+#### Model Use Cases - How could the model be used?
+  
+1) **To quantify the relationship between a team's statistics and chances of winning.**
+- For example, if our cumulative spread record is X points greater than our opponent, how much does this increase our odds of winning?
+- **Assumptions**:
+  - To estimate the effects this variable alone, we must assume all other differences in season performance (between us and the opponent) are treated as the average. 
+  - As this situation is hypothetical, we assume the opponent's records is unknown and treated as arbitrary, and that our prediction is based solely on how much better than the opponent our team's record we will be leading up to the game.
+  - We must assume this game is played at home. If it were an away game, the model would need to be used and interpreted differently.
+
+```{r}
+avg_diff__szn_spread = mean(df$diff__szn_spread)
+avg_3rd_fail_diff = mean(df$diff__szn_third_down_failed)
+avg_diff__szn_interceptions = mean(df$diff__szn_interceptions)
+avg_diff__szn_completed_passes = mean(df$diff__szn_completed_passes)#4
+avg_diff__szn_fumbles = mean(df$diff__szn_fumbles)#3
+
+# assign the variable you want to calculate marginal effects for here:
+marginal_change_variable = df$diff__szn_interceptions
+
+# creating an example dataframe and prediction
+example_data = data.frame(
+  diff__szn_spread = c(avg_diff__szn_spread, avg_diff__szn_spread+21, avg_diff__szn_spread+21*2  ),
+  diff__szn_third_down_failed = avg_3rd_fail_diff,
+  diff__szn_interceptions = avg_diff__szn_interceptions,
+  diff__szn_completed_passes = avg_diff__szn_completed_passes,
+  diff__szn_fumbles = avg_diff__szn_fumbles
+)
+
+#prediction
+example_data$Win_Probability = round(predict(model,example_data,type="response"), 2)
+
+#formatting
+example_data %>% select( diff__szn_spread , Win_Probability) %>%
+  mutate(diff__szn_spread = round( diff__szn_spread ,0)-1,) %>%
+  rename("Cumulative Season Spread Points Greater Than Opponent " = diff__szn_spread,
+         "Win Probability at Home" = Win_Probability) %>% 
+  {. ->> example_data }
+
+
+example_data['Win Probaility Increase'] = 0
+example_data[2,3] = example_data[2,2] - example_data[1,2]
+example_data[3,3] = example_data[3,2] - example_data[1,2]
+
+kable(example_data)
+```
+- In this table, we assess the probability of winning a home game when increasing the difference in cumulative spread (between us and our opponent) by three touchdowns (+21 points). 
+- The first row represents the base case, where the home team has a 57% probability of winning by default.
+- The second row's prediction indicates that a 21 point greater cumulative spread than the opponent will result in a win probability of 76% (+19% from the base).
+- The third row's prediction indicates that a 42 point greater cumulative spread than the opponent will result in a win probability of 89% (+32% from the base).
+  - Note: The incremental 21 point spread change from the second to third row only increased win probability by 13%, rather than 19%. The incremental impact on win probability diminishes.  
+
+2) **To quantify what level of performance a team requires to win a matchup.**
+- For example, if we desire to have an 80% probability of beating an opponent later in the season, how many fewer season interceptions than the opponent should we strive for to achieve this?
+- **Assumptions**:
+  - The act of reducing interceptions alone is not responsible for a game's outcome, rather the collective effort of improving factors of the team to reduce interceptions will improve outcomes. 
+  - Same assumptions as the previous use case.
+  
+  
+  
+
+```{r}
+
+avg_diff__szn_spread = mean(df$diff__szn_spread)
+avg_3rd_fail_diff = mean(df$diff__szn_third_down_failed)
+avg_diff__szn_interceptions = mean(df$diff__szn_interceptions)
+avg_diff__szn_completed_passes = mean(df$diff__szn_completed_passes)#4
+avg_diff__szn_fumbles = mean(df$diff__szn_fumbles)#3
+
+# assign the variable you want to calculate marginal effects for here:
+marginal_change_variable = df$diff__szn_interceptions
+
+# creating an example dataframe and prediction
+example_data = data.frame(
+  diff__szn_spread = avg_diff__szn_spread,
+  diff__szn_third_down_failed = avg_3rd_fail_diff,
+  diff__szn_interceptions = c(avg_diff__szn_interceptions, avg_diff__szn_interceptions-6 ),
+  diff__szn_completed_passes = avg_diff__szn_completed_passes,
+  diff__szn_fumbles = avg_diff__szn_fumbles
+)
+
+#prediction
+example_data$Win_Probability = round(predict(model,example_data,type="response"), 2)
+
+#formatting
+example_data %>% select( diff__szn_interceptions , Win_Probability) %>%
+  mutate(diff__szn_interceptions = round( diff__szn_interceptions ,2)*-1,) %>%
+  rename("Fewer Season Interceptions than Opponent" = diff__szn_interceptions,
+         "Win Probability at Home" = Win_Probability) %>% 
+  {. ->> example_data }
+
+example_data['Win Probaility Increase'] = 0
+example_data[2,3] = example_data[2,2] - example_data[1,2]
+
+kable(example_data)
+
+```
+  
+- The prediction in the table above indicates that in order to achieve an 80% win probability, our team must have 6 fewer total season interceptions than its opponent. 
+
+
+
+#### Other Variables to be Considered to Negate Bias
+- Our experiment is designed to compare the difference in how two teams performed on the field before a game, to predict the outcome of a game. What is not accounted for is the difficulty of previous matchups these teams endured. If team 1 faced weaker or stronger teams than team 2, the season statistics will not reflect the effort required to these win games leading up to the matchup. An ELO rating system would be the appropriate tool to negate this, by adjusting a zero-sum ranking index for each team following a matchup. If a poorly ranked team upsets a highly ranked team, their ranks will be greatly impacted as opposed to two teams of similar skill. Though effective, the use of this model would add complexity to the interpretation of our analysis and falls outside of our scope.
+
+#### Conclusion
+Ultimately, the most useful statistics for fans to look at to determine win probablility are the cumulative difference in spread, third down failures, interceptions, and completed passes between the home and away teams on a cummulative basis throughout the season. The model is useful to help quantify a team's chances of winning and the level of performance likely required to win a game. Although not included in this model, it would be interesting to consider the level of difficulty of each matchup to create a model of higher accuracy. The accuracy of our model is 63%, which we believe to be the strongest model based off the data provided.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
