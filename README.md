@@ -3,10 +3,11 @@
 
 # NFL-game-win-prediction-logit-R
 
- Predictive model for NFL game outcomes - void of data leakage
+
+Writeup: [NFL Game Outcomes:  Predictive Model and Analysis](NFL-game-win-classifier.pdf)
 
  
-
+---
 Requirements:
 
 - R
