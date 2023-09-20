@@ -1,6 +1,6 @@
 ---
-title: "Applied Predictive Analytics NFL Game Outcome Prediction"
-author: "Team Lombardi"
+title: "NFL Game Outcomes: Predictive Model and Analysis"
+author: "Collin Guidry"
 date: "12/1/2021"
 output: pdf_document
 header-includes:
@@ -12,7 +12,6 @@ geometry: "left=3cm,right=3cm,top=2cm,bottom=2cm"
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE,fig.width=12, fig.height=4)
 ```
-
 
 ```{r include=FALSE}
 library(tidyr)
@@ -31,424 +30,428 @@ library(ggpubr)
 
 ```{r include=FALSE}
 
-#### Creating the data from both game and play level
+# # #### Creating the data from both game and play level
 
-# table 1: load game schedules data and select appropriate columns (home_games_table)
-# all of our calculated column will be added to this
-# This is our main dataset for prediction
-games <- nflreadr::load_schedules(2009:2020) 
+# # table 1: load game schedules data and select appropriate columns (home_games_table)
+# # all of our calculated column will be added to this
+# # This is our main dataset for prediction
+# games <- nflreadr::load_schedules(2009:2020) 
 
-# names(nflreadr::load_schedules(2010:2020))
+# # names(nflreadr::load_schedules(2010:2020))
 
-games <- games %>% select(season,week, old_game_id, gameday, home_team, away_team, home_score, away_score, result, 
-                          weekday, game_type, 
+# games <- games %>% select(season,week, old_game_id, gameday, home_team, away_team, home_score, away_score, result, 
+#                           weekday, game_type, 
                           
-                          spread_line, home_spread_odds, away_spread_odds, 
+#                           spread_line, home_spread_odds, away_spread_odds, 
                           
-                          home_moneyline, away_moneyline, under_odds, over_odds,
+#                           home_moneyline, away_moneyline, under_odds, over_odds,
                           
-                          home_rest, away_rest, 
+#                           home_rest, away_rest, 
                           
-                          surface, temp, wind, home_qb_name, away_qb_name, stadium, referee,
-                          home_coach, away_coach) %>%
-        mutate(
-        spread = home_score-away_score, #create spread
-        homeWin = if_else(spread>0, 1,0) # create homewin (what we want to predict)
-        )
-games <- games %>% arrange(season, home_team, gameday)
+#                           surface, temp, wind, home_qb_name, away_qb_name, stadium, referee,
+#                           home_coach, away_coach) %>%
+#         mutate(
+#         spread = home_score-away_score, #create spread
+#         homeWin = if_else(spread>0, 1,0) # create homewin (what we want to predict)
+#         )
+# games <- games %>% arrange(season, home_team, gameday)
 
 
-#In one dataset old teams name were changed.
-#We must make sure both datasets match.
-games[games$home_team=='STL','home_team'] = 'LA'
-games[games$home_team=='SD','home_team'] = 'LAC'
-games[games$home_team=='OAK','home_team'] = 'LV'
+# #In one dataset old teams name were changed.
+# #We must make sure both datasets match.
+# games[games$home_team=='STL','home_team'] = 'LA'
+# games[games$home_team=='SD','home_team'] = 'LAC'
+# games[games$home_team=='OAK','home_team'] = 'LV'
 
-games[games$away_team=='STL','away_team'] = 'LA'
-games[games$away_team=='SD','away_team'] = 'LAC'
-games[games$away_team=='OAK','away_team'] = 'LV'
-
-
-# This is the main dataframe we'll be working with. Rename it to df
-df <- games
+# games[games$away_team=='STL','away_team'] = 'LA'
+# games[games$away_team=='SD','away_team'] = 'LAC'
+# games[games$away_team=='OAK','away_team'] = 'LV'
 
 
-# play by play data
-pbp <- load_pbp(2009:2020)
-
-# names(pbp)
-
-# create a table where each game ID is listed twice. 
-# This is the only way to be able to show all the games for a single team in one column
-# we need to be able to see all the game schedules from both teams' "perspective"
-
-#table 2, summing up stats when filtered for 'home' team
-game_summary_home <- pbp %>%
-  group_by(old_game_id) %>%
-  filter(posteam_type =='home') %>%
-  summarize(
-    team = first(home_team),
-    win = max(if_else(result >0, 1,0)),
-    won_by = max(result)*1,
-    points = max(home_score),
-    home_game = 1,
-    complete_pass = sum(complete_pass ,na.rm=TRUE ),
-    rush_attempt = sum(rush_attempt ,na.rm=TRUE ),
-    rushing_yards = sum(rushing_yards ,na.rm=TRUE ),
-    receiving_yards = sum(receiving_yards ,na.rm=TRUE ),
-    pass_attempt = sum(pass_attempt ,na.rm=TRUE ),
-    passing_yards = sum(passing_yards ,na.rm=TRUE ),
-    third_down_converted = sum(third_down_converted ,na.rm=TRUE ),
-    third_down_failed = sum(third_down_failed ,na.rm=TRUE ),
-    return_yards = sum(return_yards ,na.rm=TRUE ),
-    qb_hit = sum(qb_hit ,na.rm=TRUE ),
-    fumble = sum(fumble ,na.rm=TRUE ),
-    fumble_lost = sum(fumble_lost ,na.rm=TRUE ),
-    sack = sum(sack ,na.rm=TRUE ),
-    touchdown = sum(touchdown ,na.rm=TRUE ),
-    field_goal_attempt = sum(field_goal_attempt ,na.rm=TRUE ),
-    penalty_yards = sum(penalty_yards ,na.rm=TRUE ),
-    interception = sum(interception ,na.rm=TRUE ),
-    epa_game_total = sum(epa ,na.rm=TRUE),
-    epa_play_avg = mean(epa ,na.rm=TRUE),
-  )
-
-#table 3, summing up stats when filtered for 'away' team
-game_summary_away <- pbp %>%
-  group_by(old_game_id) %>%
-  filter(posteam_type =='away') %>%
-  summarize(
-    team = first(away_team),
-    win = max(if_else(result <0, 1,0)),
-    won_by = max(result)*-1 , 
-    points = max(away_score),
-    home_game = 0,
-    complete_pass = sum(complete_pass ,na.rm=TRUE ),
-    rush_attempt = sum(rush_attempt ,na.rm=TRUE ),
-    rushing_yards = sum(rushing_yards ,na.rm=TRUE ),
-    receiving_yards = sum(receiving_yards ,na.rm=TRUE ),
-    pass_attempt = sum(pass_attempt ,na.rm=TRUE ),
-    passing_yards = sum(passing_yards ,na.rm=TRUE ),
-    third_down_converted = sum(third_down_converted ,na.rm=TRUE ),
-    third_down_failed = sum(third_down_failed ,na.rm=TRUE ),
-    return_yards = sum(return_yards ,na.rm=TRUE ),
-    qb_hit = sum(qb_hit ,na.rm=TRUE ),
-    fumble = sum(fumble ,na.rm=TRUE ),
-    fumble_lost = sum(fumble_lost ,na.rm=TRUE ),
-    sack = sum(sack ,na.rm=TRUE ),
-    touchdown = sum(touchdown ,na.rm=TRUE ),
-    field_goal_attempt = sum(field_goal_attempt ,na.rm=TRUE ),
-    penalty_yards = sum(penalty_yards ,na.rm=TRUE ),
-    interception = sum(interception ,na.rm=TRUE ),
-    epa_game_total = sum(epa ,na.rm=TRUE),
-    epa_play_avg = mean(epa ,na.rm=TRUE),
-  )
-
-#str(game_summary_home)
-#str(game_summary_away)
-
-# Stack tables 2 and 3 on top of each other
-# call this new table "team_schedules"
-team_schedules = bind_rows(game_summary_home, game_summary_away)
-
-# now "home" and "away" is consolidated to "team" and each game shows up twice.
+# # This is the main dataframe we'll be working with. Rename it to df
+# df <- games
 
 
-#add season, week, date to "team_schedules"
-game_dates = games %>% select(season, week, old_game_id, gameday)
-team_schedules = team_schedules %>% left_join(game_dates)
+# # play by play data
+# pbp <- load_pbp(2009:2020)
 
-#sort "team_schedules" by season, team, date
-team_schedules = team_schedules %>% arrange(season, team, gameday)
+# # names(pbp)
+
+# # create a table where each game ID is listed twice. 
+# # This is the only way to be able to show all the games for a single team in one column
+# # we need to be able to see all the game schedules from both teams' "perspective"
+
+# #table 2, summing up stats when filtered for 'home' team
+# game_summary_home <- pbp %>%
+#   group_by(old_game_id) %>%
+#   filter(posteam_type =='home') %>%
+#   summarize(
+#     team = first(home_team),
+#     win = max(if_else(result >0, 1,0)),
+#     won_by = max(result)*1,
+#     points = max(home_score),
+#     home_game = 1,
+#     complete_pass = sum(complete_pass ,na.rm=TRUE ),
+#     rush_attempt = sum(rush_attempt ,na.rm=TRUE ),
+#     rushing_yards = sum(rushing_yards ,na.rm=TRUE ),
+#     receiving_yards = sum(receiving_yards ,na.rm=TRUE ),
+#     pass_attempt = sum(pass_attempt ,na.rm=TRUE ),
+#     passing_yards = sum(passing_yards ,na.rm=TRUE ),
+#     third_down_converted = sum(third_down_converted ,na.rm=TRUE ),
+#     third_down_failed = sum(third_down_failed ,na.rm=TRUE ),
+#     return_yards = sum(return_yards ,na.rm=TRUE ),
+#     qb_hit = sum(qb_hit ,na.rm=TRUE ),
+#     fumble = sum(fumble ,na.rm=TRUE ),
+#     fumble_lost = sum(fumble_lost ,na.rm=TRUE ),
+#     sack = sum(sack ,na.rm=TRUE ),
+#     touchdown = sum(touchdown ,na.rm=TRUE ),
+#     field_goal_attempt = sum(field_goal_attempt ,na.rm=TRUE ),
+#     penalty_yards = sum(penalty_yards ,na.rm=TRUE ),
+#     interception = sum(interception ,na.rm=TRUE ),
+#     epa_game_total = sum(epa ,na.rm=TRUE),
+#     epa_play_avg = mean(epa ,na.rm=TRUE),
+#   )
+
+# #table 3, summing up stats when filtered for 'away' team
+# game_summary_away <- pbp %>%
+#   group_by(old_game_id) %>%
+#   filter(posteam_type =='away') %>%
+#   summarize(
+#     team = first(away_team),
+#     win = max(if_else(result <0, 1,0)),
+#     won_by = max(result)*-1 , 
+#     points = max(away_score),
+#     home_game = 0,
+#     complete_pass = sum(complete_pass ,na.rm=TRUE ),
+#     rush_attempt = sum(rush_attempt ,na.rm=TRUE ),
+#     rushing_yards = sum(rushing_yards ,na.rm=TRUE ),
+#     receiving_yards = sum(receiving_yards ,na.rm=TRUE ),
+#     pass_attempt = sum(pass_attempt ,na.rm=TRUE ),
+#     passing_yards = sum(passing_yards ,na.rm=TRUE ),
+#     third_down_converted = sum(third_down_converted ,na.rm=TRUE ),
+#     third_down_failed = sum(third_down_failed ,na.rm=TRUE ),
+#     return_yards = sum(return_yards ,na.rm=TRUE ),
+#     qb_hit = sum(qb_hit ,na.rm=TRUE ),
+#     fumble = sum(fumble ,na.rm=TRUE ),
+#     fumble_lost = sum(fumble_lost ,na.rm=TRUE ),
+#     sack = sum(sack ,na.rm=TRUE ),
+#     touchdown = sum(touchdown ,na.rm=TRUE ),
+#     field_goal_attempt = sum(field_goal_attempt ,na.rm=TRUE ),
+#     penalty_yards = sum(penalty_yards ,na.rm=TRUE ),
+#     interception = sum(interception ,na.rm=TRUE ),
+#     epa_game_total = sum(epa ,na.rm=TRUE),
+#     epa_play_avg = mean(epa ,na.rm=TRUE),
+#   )
+
+# #str(game_summary_home)
+# #str(game_summary_away)
+
+# # Stack tables 2 and 3 on top of each other
+# # call this new table "team_schedules"
+# team_schedules = bind_rows(game_summary_home, game_summary_away)
+
+# # now "home" and "away" is consolidated to "team" and each game shows up twice.
 
 
+# #add season, week, date to "team_schedules"
+# game_dates = games %>% select(season, week, old_game_id, gameday)
+# team_schedules = team_schedules %>% left_join(game_dates)
 
+# #sort "team_schedules" by season, team, date
+# team_schedules = team_schedules %>% arrange(season, team, gameday)
 
 
 
 
 
-###############################
-### Defining functions to evaluate team's season performance before a game.
 
 
-#create function to get cumulative stats of a team games prior to a game
-#this function returns the data containing previous games
-get_team_games <- function(df,team_name,game_season, game_week){
+
+# ###############################
+# ### Defining functions to evaluate team's season performance before a game.
+
+
+# #create function to get cumulative stats of a team games prior to a game
+# #this function returns the data containing previous games
+# get_team_games <- function(df,team_name,game_season, game_week){
   
-  df = df %>% filter(season == game_season,
-                     team == team_name,
-                     week < game_week)
-  return(df)
-}
+#   df = df %>% filter(season == game_season,
+#                      team == team_name,
+#                      week < game_week)
+#   return(df)
+# }
 
-#example
-# str(get_team_games(team_schedules, "MIN", 2010,5))
-
-
+# #example
+# # str(get_team_games(team_schedules, "MIN", 2010,5))
 
 
-#this function returns the cumulative statistics of the games prior in the season
-get_team_stats <- function(df,team_name,game_season, game_week){
+
+
+# #this function returns the cumulative statistics of the games prior in the season
+# get_team_stats <- function(df,team_name,game_season, game_week){
   
-  df = df %>% filter(season == game_season,
-                     team == team_name,
-                     week < game_week)
+#   df = df %>% filter(season == game_season,
+#                      team == team_name,
+#                      week < game_week)
   
-  df = df %>% summarize(
-    szn_wins = mean(win),
-    szn_spread = mean(won_by),
-    szn_points = mean(points),
-    szn_home_games = mean(home_game),
-    szn_completed_passes = mean(complete_pass),
-    szn_rush_attempts = mean(rush_attempt),
-    szn_rushing_yards = mean(rushing_yards),
-    szn_receiving_yards = mean(receiving_yards),
-    szn_pass_attempt = mean(pass_attempt),
-    szn_passing_yards = mean(passing_yards),
-    szn_third_down_conversions = mean(third_down_converted),
-    szn_third_down_failed = mean(third_down_failed),
-    szn_return_yards = mean(return_yards),
-    szn_qb_hit = mean(qb_hit),
-    szn_fumbles = mean(fumble),
-    szn_fumbles_lost_pos = mean(fumble_lost),
-    szn_sacked_sum = mean(sack),
-    szn_touchdowns = mean(touchdown),
-    szn_FG_attempts = mean(field_goal_attempt),
-    szn_penalty_yards = mean(penalty_yards),
-    szn_interceptions = mean(interception),
-    szn_game_epa = mean(epa_game_total),
-    szn_play_epa = mean(epa_play_avg)
-    )
+#   df = df %>% summarize(
+#     szn_wins = mean(win),
+#     szn_spread = mean(won_by),
+#     szn_points = mean(points),
+#     szn_home_games = mean(home_game),
+#     szn_completed_passes = mean(complete_pass),
+#     szn_rush_attempts = mean(rush_attempt),
+#     szn_rushing_yards = mean(rushing_yards),
+#     szn_receiving_yards = mean(receiving_yards),
+#     szn_pass_attempt = mean(pass_attempt),
+#     szn_passing_yards = mean(passing_yards),
+#     szn_third_down_conversions = mean(third_down_converted),
+#     szn_third_down_failed = mean(third_down_failed),
+#     szn_return_yards = mean(return_yards),
+#     szn_qb_hit = mean(qb_hit),
+#     szn_fumbles = mean(fumble),
+#     szn_fumbles_lost_pos = mean(fumble_lost),
+#     szn_sacked_sum = mean(sack),
+#     szn_touchdowns = mean(touchdown),
+#     szn_FG_attempts = mean(field_goal_attempt),
+#     szn_penalty_yards = mean(penalty_yards),
+#     szn_interceptions = mean(interception),
+#     szn_game_epa = mean(epa_game_total),
+#     szn_play_epa = mean(epa_play_avg)
+#     )
   
-  return(df)
+#   return(df)
   
-}
+# }
 
-#example
-# str(get_team_stats(team_schedules, "MIN", 2010,5))
-
-
+# #example
+# # str(get_team_stats(team_schedules, "MIN", 2010,5))
 
 
-# This function returns the cumulative statistics ALL GAMES IN A SEASON
-# Should be used if it's the first game of the season
-get_team_szn_stats <- function(df,team_name,game_season, game_week){
+
+
+# # This function returns the cumulative statistics ALL GAMES IN A SEASON
+# # Should be used if it's the first game of the season
+# get_team_szn_stats <- function(df,team_name,game_season, game_week){
   
-  df = df %>% filter(season == game_season,
-                     team == team_name)
+#   df = df %>% filter(season == game_season,
+#                      team == team_name)
   
-  df = df %>% summarize(
-    szn_wins = mean(win),
-    szn_spread = mean(won_by),
-    szn_points = mean(points),
-    szn_home_games = mean(home_game),
-    szn_completed_passes = mean(complete_pass),
-    szn_rush_attempts = mean(rush_attempt),
-    szn_rushing_yards = mean(rushing_yards),
-    szn_receiving_yards = mean(receiving_yards),
-    szn_pass_attempt = mean(pass_attempt),
-    szn_passing_yards = mean(passing_yards),
-    szn_third_down_conversions = mean(third_down_converted),
-    szn_third_down_failed = mean(third_down_failed),
-    szn_return_yards = mean(return_yards),
-    szn_qb_hit = mean(qb_hit),
-    szn_fumbles = mean(fumble),
-    szn_fumbles_lost_pos = mean(fumble_lost),
-    szn_sacked_sum = mean(sack),
-    szn_touchdowns = mean(touchdown),
-    szn_FG_attempts = mean(field_goal_attempt),
-    szn_penalty_yards = mean(penalty_yards),
-    szn_interceptions = mean(interception),
-    szn_game_epa = mean(epa_game_total),
-    szn_play_epa = mean(epa_play_avg)
+#   df = df %>% summarize(
+#     szn_wins = mean(win),
+#     szn_spread = mean(won_by),
+#     szn_points = mean(points),
+#     szn_home_games = mean(home_game),
+#     szn_completed_passes = mean(complete_pass),
+#     szn_rush_attempts = mean(rush_attempt),
+#     szn_rushing_yards = mean(rushing_yards),
+#     szn_receiving_yards = mean(receiving_yards),
+#     szn_pass_attempt = mean(pass_attempt),
+#     szn_passing_yards = mean(passing_yards),
+#     szn_third_down_conversions = mean(third_down_converted),
+#     szn_third_down_failed = mean(third_down_failed),
+#     szn_return_yards = mean(return_yards),
+#     szn_qb_hit = mean(qb_hit),
+#     szn_fumbles = mean(fumble),
+#     szn_fumbles_lost_pos = mean(fumble_lost),
+#     szn_sacked_sum = mean(sack),
+#     szn_touchdowns = mean(touchdown),
+#     szn_FG_attempts = mean(field_goal_attempt),
+#     szn_penalty_yards = mean(penalty_yards),
+#     szn_interceptions = mean(interception),
+#     szn_game_epa = mean(epa_game_total),
+#     szn_play_epa = mean(epa_play_avg)
     
-  )
-  return(df)
+#   )
+#   return(df)
   
-}
+# }
 
-#example
-# str(get_team_szn_stats(team_schedules, "MIN", 2010,5))
-
-
-
-###############################
-#### Generate stats for the HOME teams (iterate through games)
-
-
-#use our function once to obtain the column names of the table it creates 
-szn_stats =  get_team_stats(team_schedules, "MIN", 2010,1)
-#create an empty data.frame with this number of columns
-cumulative_stats = data.frame(matrix(ncol = length(names(szn_stats)), nrow = 0))
-#assign column names of the stats we will generate to this empty dataframe
-colnames(cumulative_stats) = colnames(szn_stats)
-
-
-# iterate through our original "games" dataset and generate the cumulative stats for each row.
-# Do this for the home team
-# if it's the first week, look at last season's stats
-
-
-for (i in 1:nrow(df)) {
-#for (i in 1:1 ){
-  hometeam  <- pull( df[i, "home_team"] )
-  game_season <- pull( df[i, "season"] )
-  game_week <- pull( df[i, "week"] )
-
-  if(game_week > 1){
-    szn_stats = get_team_stats(team_schedules, hometeam, game_season, game_week)
-  }
-  else{
-    szn_stats = get_team_szn_stats(team_schedules, hometeam, game_season-1, game_week)
-  }
-
-  cumulative_stats[i,] = szn_stats[1,]
-}
-
-
-# rename all these stats to HOME, as we ran these for all the home teams
-cumulative_stats <- cumulative_stats %>% rename(
-  home__szn_wins = szn_wins,
-  home__szn_spread = szn_spread,
-  home__szn_points = szn_points,
-  home__szn_home_games = szn_home_games,
-  home__szn_completed_passes = szn_completed_passes,
-  home__szn_rush_attempts = szn_rush_attempts,
-  home__szn_rushing_yards = szn_rushing_yards,
-  home__szn_receiving_yards = szn_receiving_yards,
-  home__szn_pass_attempt = szn_pass_attempt,
-  home__szn_passing_yards = szn_passing_yards,
-  home__szn_third_down_conversions = szn_third_down_conversions,
-  home__szn_third_down_failed = szn_third_down_failed,
-  home__szn_return_yards = szn_return_yards,
-  home__szn_qb_hit = szn_qb_hit,
-  home__szn_fumbles = szn_fumbles,
-  home__szn_fumbles_lost_pos = szn_fumbles_lost_pos,
-  home__szn_sacked_sum = szn_sacked_sum,
-  home__szn_touchdowns = szn_touchdowns,
-  home__szn_FG_attempts = szn_FG_attempts,
-  home__szn_penalty_yards = szn_penalty_yards,
-  home__szn_interceptions = szn_interceptions,
-  home__szn_game_epa = szn_game_epa,
-  home__szn_play_epa = szn_play_epa
-)
-
-
-# merge all these HOME stats onto the side of our dataframe.
-cumulative_stats$old_game_id = df$old_game_id
-df = merge(df, cumulative_stats, by='old_game_id')
+# #example
+# # str(get_team_szn_stats(team_schedules, "MIN", 2010,5))
 
 
 
-###############################
-#### Generate stats for the AWAY teams (iterate through games)
-
-#use our function once to obtain the column names of the table it creates  
-szn_stats =  get_team_stats(team_schedules, "MIN", 2007,1)
-#create an empty data.frame with this number of columns
-cumulative_stats = data.frame(matrix(ncol = length(names(szn_stats)), nrow = 0))
-#assign column names of the stats we will generate to this empty dataframe
-colnames(cumulative_stats) = colnames(szn_stats)
+# ###############################
+# #### Generate stats for the HOME teams (iterate through games)
 
 
-# iterate through our original "games" dataset and generate the cumulative stats for each row.
-# Do this for the away team
-# if it's the first week, look at last season's stats
+# #use our function once to obtain the column names of the table it creates 
+# szn_stats =  get_team_stats(team_schedules, "MIN", 2010,1)
+# #create an empty data.frame with this number of columns
+# cumulative_stats = data.frame(matrix(ncol = length(names(szn_stats)), nrow = 0))
+# #assign column names of the stats we will generate to this empty dataframe
+# colnames(cumulative_stats) = colnames(szn_stats)
 
 
-for (i in 1:nrow(df)) {
-  #for (i in 1:1 ){
-  hometeam  <- pull( df[i, "away_team"] )
-  game_season <- pull( df[i, "season"] )
-  game_week <- pull( df[i, "week"] )
+# # iterate through our original "games" dataset and generate the cumulative stats for each row.
+# # Do this for the home team
+# # if it's the first week, look at last season's stats
 
-  if(game_week > 1){
-    szn_stats = get_team_stats(team_schedules, hometeam, game_season, game_week)
-  }
-  else{
-    szn_stats = get_team_szn_stats(team_schedules, hometeam, game_season-1, game_week)
-  }
 
-  cumulative_stats[i,] = szn_stats[1,]
-}
+# for (i in 1:nrow(df)) {
+# #for (i in 1:1 ){
+#   hometeam  <- pull( df[i, "home_team"] )
+#   game_season <- pull( df[i, "season"] )
+#   game_week <- pull( df[i, "week"] )
 
-# rename all these stats to HOME, as we ran these for all the home teams
-cumulative_stats <- cumulative_stats %>% rename(
-  away__szn_wins = szn_wins,
-  away__szn_spread = szn_spread,
-  away__szn_points = szn_points,
-  away__szn_home_games = szn_home_games,
-  away__szn_completed_passes = szn_completed_passes,
-  away__szn_rush_attempts = szn_rush_attempts,
-  away__szn_rushing_yards = szn_rushing_yards,
-  away__szn_receiving_yards = szn_receiving_yards,
-  away__szn_pass_attempt = szn_pass_attempt,
-  away__szn_passing_yards = szn_passing_yards,
-  away__szn_third_down_conversions = szn_third_down_conversions,
-  away__szn_third_down_failed = szn_third_down_failed,
-  away__szn_return_yards = szn_return_yards,
-  away__szn_qb_hit = szn_qb_hit,
-  away__szn_fumbles = szn_fumbles,
-  away__szn_fumbles_lost_pos = szn_fumbles_lost_pos,
-  away__szn_sacked_sum = szn_sacked_sum,
-  away__szn_touchdowns = szn_touchdowns,
-  away__szn_FG_attempts = szn_FG_attempts,
-  away__szn_penalty_yards = szn_penalty_yards,
-  away__szn_interceptions = szn_interceptions,
-  away__szn_game_epa = szn_game_epa,
-  away__szn_play_epa = szn_play_epa
-)
+#   if(game_week > 1){
+#     szn_stats = get_team_stats(team_schedules, hometeam, game_season, game_week)
+#   }
+#   else{
+#     szn_stats = get_team_szn_stats(team_schedules, hometeam, game_season-1, game_week)
+#   }
 
-# merge all these HOME stats onto the side of our dataframe.
-cumulative_stats$old_game_id = df$old_game_id
-df = merge(df, cumulative_stats, by='old_game_id')
+#   cumulative_stats[i,] = szn_stats[1,]
+# }
 
-df = df %>% filter(season > 2009)
 
-###############################
-### Calculate columns that compare the home and away team season stats (difference)
+# # rename all these stats to HOME, as we ran these for all the home teams
+# cumulative_stats <- cumulative_stats %>% rename(
+#   home__szn_wins = szn_wins,
+#   home__szn_spread = szn_spread,
+#   home__szn_points = szn_points,
+#   home__szn_home_games = szn_home_games,
+#   home__szn_completed_passes = szn_completed_passes,
+#   home__szn_rush_attempts = szn_rush_attempts,
+#   home__szn_rushing_yards = szn_rushing_yards,
+#   home__szn_receiving_yards = szn_receiving_yards,
+#   home__szn_pass_attempt = szn_pass_attempt,
+#   home__szn_passing_yards = szn_passing_yards,
+#   home__szn_third_down_conversions = szn_third_down_conversions,
+#   home__szn_third_down_failed = szn_third_down_failed,
+#   home__szn_return_yards = szn_return_yards,
+#   home__szn_qb_hit = szn_qb_hit,
+#   home__szn_fumbles = szn_fumbles,
+#   home__szn_fumbles_lost_pos = szn_fumbles_lost_pos,
+#   home__szn_sacked_sum = szn_sacked_sum,
+#   home__szn_touchdowns = szn_touchdowns,
+#   home__szn_FG_attempts = szn_FG_attempts,
+#   home__szn_penalty_yards = szn_penalty_yards,
+#   home__szn_interceptions = szn_interceptions,
+#   home__szn_game_epa = szn_game_epa,
+#   home__szn_play_epa = szn_play_epa
+# )
 
-df <- df %>% mutate(
-  diff__szn_wins = home__szn_wins - away__szn_wins,
-  diff__szn_spread = home__szn_spread - away__szn_spread,
-  diff__szn_points  = home__szn_points - away__szn_points,
-  diff__szn_home_games = home__szn_home_games - away__szn_home_games,
-  diff__szn_completed_passes = home__szn_completed_passes - away__szn_completed_passes,
-  diff__szn_rush_attempts = home__szn_rush_attempts - away__szn_rush_attempts,
-  diff__szn_rushing_yards = home__szn_rushing_yards - away__szn_rushing_yards,
-  diff__szn_receiving_yards = home__szn_receiving_yards - away__szn_receiving_yards,
-  diff__szn_pass_attempt = home__szn_pass_attempt - away__szn_pass_attempt,
-  diff__szn_passing_yards = home__szn_passing_yards - away__szn_passing_yards,
-  diff__szn_third_down_conversions = home__szn_third_down_conversions - away__szn_third_down_conversions,
-  diff__szn_third_down_failed = home__szn_third_down_failed - away__szn_third_down_failed,
-  diff__szn_return_yards = home__szn_return_yards - away__szn_return_yards,
-  diff__szn_qb_hit  = home__szn_qb_hit - away__szn_qb_hit,
-  diff__szn_fumbles = home__szn_fumbles - away__szn_fumbles,
-  diff__szn_fumbles_lost_pos = home__szn_fumbles_lost_pos - away__szn_fumbles_lost_pos,
-  diff__szn_sacked_sum = home__szn_sacked_sum - away__szn_sacked_sum,
-  diff__szn_touchdowns = home__szn_touchdowns - away__szn_touchdowns,
-  diff__szn_FG_attempts = home__szn_FG_attempts - away__szn_FG_attempts,
-  diff__szn_penalty_yards = home__szn_penalty_yards - away__szn_penalty_yards,
-  diff__szn_interceptions = home__szn_interceptions - away__szn_interceptions,
-  diff__szn_game_epa = home__szn_game_epa - away__szn_game_epa,
-  diff__szn_play_epa = home__szn_play_epa - away__szn_play_epa,
-  diff__szn_touchdowns= home__szn_touchdowns - away__szn_touchdowns
-)
 
-write.csv(df,"pre_model_data.csv", row.names = FALSE)
+# # merge all these HOME stats onto the side of our dataframe.
+# cumulative_stats$old_game_id = df$old_game_id
+# df = merge(df, cumulative_stats, by='old_game_id')
 
+
+
+# ###############################
+# #### Generate stats for the AWAY teams (iterate through games)
+
+# #use our function once to obtain the column names of the table it creates  
+# szn_stats =  get_team_stats(team_schedules, "MIN", 2007,1)
+# #create an empty data.frame with this number of columns
+# cumulative_stats = data.frame(matrix(ncol = length(names(szn_stats)), nrow = 0))
+# #assign column names of the stats we will generate to this empty dataframe
+# colnames(cumulative_stats) = colnames(szn_stats)
+
+
+# # iterate through our original "games" dataset and generate the cumulative stats for each row.
+# # Do this for the away team
+# # if it's the first week, look at last season's stats
+
+
+# for (i in 1:nrow(df)) {
+#   #for (i in 1:1 ){
+#   hometeam  <- pull( df[i, "away_team"] )
+#   game_season <- pull( df[i, "season"] )
+#   game_week <- pull( df[i, "week"] )
+
+#   if(game_week > 1){
+#     szn_stats = get_team_stats(team_schedules, hometeam, game_season, game_week)
+#   }
+#   else{
+#     szn_stats = get_team_szn_stats(team_schedules, hometeam, game_season-1, game_week)
+#   }
+
+#   cumulative_stats[i,] = szn_stats[1,]
+# }
+
+# # rename all these stats to HOME, as we ran these for all the home teams
+# cumulative_stats <- cumulative_stats %>% rename(
+#   away__szn_wins = szn_wins,
+#   away__szn_spread = szn_spread,
+#   away__szn_points = szn_points,
+#   away__szn_home_games = szn_home_games,
+#   away__szn_completed_passes = szn_completed_passes,
+#   away__szn_rush_attempts = szn_rush_attempts,
+#   away__szn_rushing_yards = szn_rushing_yards,
+#   away__szn_receiving_yards = szn_receiving_yards,
+#   away__szn_pass_attempt = szn_pass_attempt,
+#   away__szn_passing_yards = szn_passing_yards,
+#   away__szn_third_down_conversions = szn_third_down_conversions,
+#   away__szn_third_down_failed = szn_third_down_failed,
+#   away__szn_return_yards = szn_return_yards,
+#   away__szn_qb_hit = szn_qb_hit,
+#   away__szn_fumbles = szn_fumbles,
+#   away__szn_fumbles_lost_pos = szn_fumbles_lost_pos,
+#   away__szn_sacked_sum = szn_sacked_sum,
+#   away__szn_touchdowns = szn_touchdowns,
+#   away__szn_FG_attempts = szn_FG_attempts,
+#   away__szn_penalty_yards = szn_penalty_yards,
+#   away__szn_interceptions = szn_interceptions,
+#   away__szn_game_epa = szn_game_epa,
+#   away__szn_play_epa = szn_play_epa
+# )
+
+# # merge all these HOME stats onto the side of our dataframe.
+# cumulative_stats$old_game_id = df$old_game_id
+# df = merge(df, cumulative_stats, by='old_game_id')
+
+# df = df %>% filter(season > 2009)
+
+# ###############################
+# ### Calculate columns that compare the home and away team season stats (difference)
+
+# df <- df %>% mutate(
+#   diff__szn_wins = home__szn_wins - away__szn_wins,
+#   diff__szn_spread = home__szn_spread - away__szn_spread,
+#   diff__szn_points  = home__szn_points - away__szn_points,
+#   diff__szn_home_games = home__szn_home_games - away__szn_home_games,
+#   diff__szn_completed_passes = home__szn_completed_passes - away__szn_completed_passes,
+#   diff__szn_rush_attempts = home__szn_rush_attempts - away__szn_rush_attempts,
+#   diff__szn_rushing_yards = home__szn_rushing_yards - away__szn_rushing_yards,
+#   diff__szn_receiving_yards = home__szn_receiving_yards - away__szn_receiving_yards,
+#   diff__szn_pass_attempt = home__szn_pass_attempt - away__szn_pass_attempt,
+#   diff__szn_passing_yards = home__szn_passing_yards - away__szn_passing_yards,
+#   diff__szn_third_down_conversions = home__szn_third_down_conversions - away__szn_third_down_conversions,
+#   diff__szn_third_down_failed = home__szn_third_down_failed - away__szn_third_down_failed,
+#   diff__szn_return_yards = home__szn_return_yards - away__szn_return_yards,
+#   diff__szn_qb_hit  = home__szn_qb_hit - away__szn_qb_hit,
+#   diff__szn_fumbles = home__szn_fumbles - away__szn_fumbles,
+#   diff__szn_fumbles_lost_pos = home__szn_fumbles_lost_pos - away__szn_fumbles_lost_pos,
+#   diff__szn_sacked_sum = home__szn_sacked_sum - away__szn_sacked_sum,
+#   diff__szn_touchdowns = home__szn_touchdowns - away__szn_touchdowns,
+#   diff__szn_FG_attempts = home__szn_FG_attempts - away__szn_FG_attempts,
+#   diff__szn_penalty_yards = home__szn_penalty_yards - away__szn_penalty_yards,
+#   diff__szn_interceptions = home__szn_interceptions - away__szn_interceptions,
+#   diff__szn_game_epa = home__szn_game_epa - away__szn_game_epa,
+#   diff__szn_play_epa = home__szn_play_epa - away__szn_play_epa,
+#   diff__szn_touchdowns= home__szn_touchdowns - away__szn_touchdowns
+# )
+
+# ```
+
+# ```{r include=FALSE}
+
+# # write.csv(df,"nfl_data_preprocessed.csv", row.names = FALSE)
 
 ```
 
+
 ```{r include=FALSE}
 
-# if all the libraries are imported, AND you've run the above cell at least once, you can now begin running from here to prevent redundant calculations
+# if all the libraries are imported, AND you've run the above cell at least once, 
+# you can now begin running from here to prevent redundant calculations
 
 #######
 
-df = read.csv("pre_model_data.csv")
-
+df = read.csv("data/nfl_data_preprocessed.csv")
 
 
 ##### final formatting for model
@@ -628,7 +631,7 @@ df = df %>% mutate(
               )
 
 
-write.csv(df,"hw2_data_with_predictions.csv", row.names = FALSE)
+write.csv(df,"data/nfl_data_inferenced.csv", row.names = FALSE)
 
 
 ```
@@ -655,10 +658,6 @@ classMatrix = table(pred,df$homeWin)
 ```
 
 
-#### Prepared by:
-
--   Collin Guidry (48501146), Ashley Jurak (48501172), Jiten Mistry (48666610),  Priyanka Raj (48682704), Kevin Wolf (47616989)
-
 #### Introduction:
 
 - This report is meant to explain the relationship between the probability that a team will win (at home) and various NFL team cumulative season statistics, such as the difference between the total number of interceptions and fumbles between the home and away teams. By identifying significant indicators of success, a team can improve its strategy and areas of focus to improve outcomes. Ultimately, we hope fans will use this information to make informed betting decisions when wagering on the game.
@@ -666,7 +665,7 @@ classMatrix = table(pred,df$homeWin)
 #### Data Preparation
 - The NFL data used in this analysis is presented at the game-level, representing a matchup between two teams, as well as at the play-level. By aggregating data on the play-level, the total yards or interceptions a team produces can be calculated for each game. Once the play-level statistics are aggregated to the game-level, the cumulative sum throughout the season is calculated for each game. For example, the total interceptions from all previous games in a season can be totaled for both the home and away teams. The difference of these cumulative season statistics is then calculated between the home and away teams to create a variable of comparison for each matchup. For the first week of the season, totals from the previous season are referenced. This approach, of calculating the differences of cumulative statistics between teams, is necessary for capturing information that is only available prior to a matchup and comparing both teams.
 
-##### Assumtions when predicting a home team's win
+##### Assumptions when predicting a home team's win
 - Teams have a 56% chance of winning when playing at home. (n=2,936)
 - On average, home teams win by a 2 point spread.
 - On average, odd-makers predict home teams will win a 2.2 point spead line.
